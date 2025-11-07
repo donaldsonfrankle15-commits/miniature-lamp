@@ -1,0 +1,67 @@
+name: AVD_VNC
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-vnc:
+    # Uses the standard GitHub-Hosted Linux (Ubuntu) Runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 
+
+    steps:
+      - name: Setup Java and Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      
+      - name: Create and Run Android Emulator
+        # Install and run the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30  # Use an appropriate API level
+          target: default
+          arch: x86_64
+          profile: Nexus 6
+          disable-audio: true
+          # Port forward VNC (5900) from the host to the emulator's VNC port (usually 5901 or 5900)
+          # Note: The emulator runner usually exposes its screen on 5900/5901 on the HOST
+          # We'll rely on the emulator-runner to handle the host setup.
+
+      - name: Install Tailscale on Runner Host
+        run: |
+          # Install Tailscale on the Ubuntu host machine
+          curl -fsSL https://pkgs.tailscale.com/install.sh | sh
+          
+      - name: Establish Tailscale Connection on Runner Host
+        env:
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          # Bring up Tailscale on the host with the provided auth key
+          sudo tailscale up --authkey=$TS_AUTH_KEY --hostname=gh-android-runner-$GITHUB_RUN_ID
+          
+          # Wait for Tailscale to assign an IP
+          TS_IP=$(sudo tailscale ip -4)
+          while [ -z "$TS_IP" ]; do sleep 5; TS_IP=$(sudo tailscale ip -4); done
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+          
+      - name: Start VNC Server in Emulator (Requires ADB Access)
+        run: |
+          # The 'android-emulator-runner' action should manage VNC, but if needed:
+          # VNC port 5900 is often exposed on the host via an emulator port (e.g., 5555)
+          # We assume the 'android-emulator-runner' sets up VNC on port 5900 on the host.
+          
+          # Print connection info
+          echo -e "\n=== VNC ACCESS ==="
+          echo "Address: $TAILSCALE_IP:5900 (Use VNC Client)"
+          echo "Note: The VNC password is often not set by default on AVD."
+          echo "==================\n"
+          
+      - name: Maintain Connection
+        run: |
+          # Keep runner active indefinitely until timeout (6 hours max)
+          while true; do
+              echo "[$(date)] AVD Active - Use Ctrl+C in workflow to terminate"
+              sleep 300
+          done
