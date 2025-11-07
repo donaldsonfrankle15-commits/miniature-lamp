@@ -1,0 +1,86 @@
+name:  Linux
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    # Uses the standard GitHub-Hosted Ubuntu Runner
+    runs-on: ubuntu-latest
+    # Subject to the 6-hour GitHub limit
+    timeout-minutes: 360 
+
+    steps:
+      - name: Install Desktop and RDP Server (xrdp)
+        run: |
+          # Install necessary desktop environment (xfce4) and RDP server
+          sudo apt update
+          sudo apt install -y xrdp xfce4 xfce4-terminal
+          
+          # Configure XRDP to use XFCE
+          echo xfce4-session > ~/.xsession
+          
+          # Enable and start the RDP service
+          sudo systemctl enable xrdp
+          sudo systemctl start xrdp
+          
+      - name: Configure Firewall and Network Access
+        run: |
+          # Allow RDP port 3389 through the firewall
+          sudo ufw allow 3389/tcp
+          sudo ufw enable || true # Enable ufw, ignore failure if already enabled
+          
+      - name: Create RDP User with Secure Password
+        run: |
+          RDP_USER="rdpuser"
+          
+          # Generate a random password using bash utilities
+          PASSWORD=$(LC_ALL=C tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
+          
+          # Create user, set password, and add to sudoers group
+          sudo useradd -m -s /bin/bash $RDP_USER
+          echo "$RDP_USER:$PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo $RDP_USER
+          
+          # Set the output variable
+          echo "RDP_CREDS=User: $RDP_USER | Password: $PASSWORD" >> $GITHUB_ENV
+
+      - name: Install Tailscale
+        run: |
+          # Install Tailscale following official Linux setup steps
+          curl -fsSL https://pkgs.tailscale.com/install.sh | sh
+          
+      - name: Establish Tailscale Connection
+        env:
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          # Bring up Tailscale with the provided auth key
+          sudo tailscale up --authkey=$TS_AUTH_KEY --hostname=gh-runner-$GITHUB_RUN_ID
+          
+          # Wait for Tailscale to assign an IP
+          TS_IP=$(sudo tailscale ip -4)
+          while [ -z "$TS_IP" ] && [ "$RETRIES" -lt 10 ]; do
+              sleep 5
+              TS_IP=$(sudo tailscale ip -4)
+              RETRIES=$((RETRIES+1))
+          done
+          
+          if [ -z "$TS_IP" ]; then
+              echo "Tailscale IP not assigned. Exiting."
+              exit 1
+          fi
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+      
+      - name: Maintain Connection
+        run: |
+          echo -e "\n=== RDP ACCESS ==="
+          echo "Address: $TAILSCALE_IP"
+          echo "Username: $RDP_USER"
+          echo "Password: $(echo $RDP_CREDS)"
+          echo "==================\n"
+          
+          # Keep runner active indefinitely until timeout
+          while true; do
+              echo "[$(date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              sleep 300
+          done
