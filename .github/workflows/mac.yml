@@ -1,0 +1,73 @@
+name: VNC_macOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-vnc:
+    # Uses the standard GitHub-Hosted macOS Runner
+    runs-on: macos-latest
+    # Subject to the 6-hour GitHub limit
+    timeout-minutes: 360 
+
+    steps:
+      - name: Configure VNC (Screen Sharing)
+        run: |
+          VNC_PASSWORD="YourSecureVNCPassword"
+          
+          # 1. Enable Screen Sharing / Remote Management and set privileges
+          # Note: This step is often blocked by security settings on hosted runners
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -on \
+            -clientopts -setvnclegacy -vnclegacy yes \
+            -clientopts -setvncpw -vncpw $VNC_PASSWORD \
+            -restart -agent -privs -all
+            
+          # 2. Allow Firewall Access for VNC (Port 5900)
+          # macOS firewall commands can be complex, often managed via 'pfctl' or 'socketfilterfw'
+          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on
+          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /System/Library/CoreServices/RemoteManagement/ARDAgent.app
+          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /System/Library/CoreServices/RemoteManagement/ARDAgent.app
+          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /System/Library/CoreServices/ScreenSharing.app
+          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblock /System/Library/CoreServices/ScreenSharing.app
+          
+          echo "VNC_PASSWORD=$VNC_PASSWORD" >> $GITHUB_ENV
+
+      - name: Install Tailscale
+        run: |
+          # Install Tailscale (using Homebrew, common on macOS runners)
+          brew install tailscale
+          
+      - name: Establish Tailscale Connection
+        env:
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          # Bring up Tailscale with the provided auth key
+          sudo tailscale up --authkey=$TS_AUTH_KEY --hostname=gh-runner-$GITHUB_RUN_ID
+          
+          # Wait for Tailscale to assign an IP
+          TS_IP=$(sudo tailscale ip -4)
+          while [ -z "$TS_IP" ] && [ "$RETRIES" -lt 10 ]; do
+              sleep 5
+              TS_IP=$(sudo tailscale ip -4)
+              RETRIES=$((RETRIES+1))
+          done
+          
+          if [ -z "$TS_IP" ]; then
+              echo "Tailscale IP not assigned. Exiting."
+              exit 1
+          fi
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+      
+      - name: Maintain Connection
+        run: |
+          echo -e "\n=== VNC ACCESS ==="
+          echo "Address: $TAILSCALE_IP:5900 (Use VNC Client)"
+          echo "Password: $VNC_PASSWORD"
+          echo "==================\n"
+          
+          # Keep runner active indefinitely until timeout
+          while true; do
+              echo "[$(date)] VNC Active - Use Ctrl+C in workflow to terminate"
+              sleep 300
+          done
