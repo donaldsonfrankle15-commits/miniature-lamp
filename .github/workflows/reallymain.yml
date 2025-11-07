@@ -1,4 +1,4 @@
-name: RDP
+name: OpenSSL
 
 on:
   workflow_dispatch:
